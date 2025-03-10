@@ -1,0 +1,30 @@
+# Model configuration
+model:
+  name: "deepseek-ai/deepseek-llm-7b-base"
+  save_dir: "./saved_models/"
+
+# Dataset configuration
+dataset:
+  num_samples: 20
+  max_length: 50
+
+# Optimization configuration
+optimization:
+  popsize: 5
+  maxiter: 2
+  tol: 0.001
+  bounds:
+    bits: [12, 16]
+    prune: [0, 0.1]
+
+# STL specifications
+stl:
+  k: 5
+  epsilon: 0.1
+  delta: 0.2
+  gamma: 0.4
+  tau: 0.5
+
+# Miscellaneous
+misc:
+  batch_size: 1
