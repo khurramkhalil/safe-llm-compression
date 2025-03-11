@@ -4,6 +4,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 import torch
+import numpy as np
 import yaml
 import csv
 import time
@@ -33,7 +34,7 @@ def main():
         model_name=config['model']['name'],
         save_dir=save_dir
     )
-    base_model.cuda()  # Keep on GPU
+    base_model.cuda()
 
     print("Preprocessing dataset...")
     dataset_subset, ground_truth_cache = load_and_preprocess_data(
@@ -73,7 +74,7 @@ def main():
     input_len = dataset_subset[0]["input_len"]
     generated_ids = None
     if ground_truth_ids:
-        input_ids_batch = tokenizer(dataset_subset[0]["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length']).input_ids.cuda()
+        input_ids_batch = tokenizer(dataset_subset[0]["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length'], padding='left').input_ids.cuda()
         with torch.no_grad():
             gen_output = base_model.generate(
                 input_ids_batch,

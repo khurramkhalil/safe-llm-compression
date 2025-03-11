@@ -8,17 +8,27 @@ import os
 # Global model instance to avoid repeated deep copies
 comp_model = None
 
-def load_base_model(model_name="deepseek-ai/deepseek-llm-7b-base", save_dir="./saved_models/"):
-    """Load the base model and tokenizer, save locally, and return them."""
+# def load_base_model(model_name="deepseek-ai/deepseek-llm-7b-base", save_dir="./saved_models/"):
+#     """Load the base model and tokenizer, save locally, and return them."""
+#     os.makedirs(save_dir, exist_ok=True)
+#     base_model = AutoModelForCausalLM.from_pretrained(
+#         model_name, torch_dtype=torch.float16, device_map="auto"
+#     )
+#     tokenizer = AutoTokenizer.from_pretrained(model_name)
+#     base_model.save_pretrained(os.path.join(save_dir, "deepseek-7b-local"))
+#     tokenizer.save_pretrained(os.path.join(save_dir, "deepseek-7b-local"))
+#     original_size = sum(p.numel() * 2 for p in base_model.parameters()) / (1024 ** 2)  # FP16: 2 bytes per param
+#     return base_model, tokenizer, original_size
+
+def load_base_model(model_name, save_dir="./saved_models/"):
+    """Load the base model and tokenizer."""
     os.makedirs(save_dir, exist_ok=True)
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.float16, device_map="auto"
-    )
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    base_model.save_pretrained(os.path.join(save_dir, "deepseek-7b-local"))
-    tokenizer.save_pretrained(os.path.join(save_dir, "deepseek-7b-local"))
-    original_size = sum(p.numel() * 2 for p in base_model.parameters()) / (1024 ** 2)  # FP16: 2 bytes per param
-    return base_model, tokenizer, original_size
+    tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    model = AutoModelForCausalLM.from_pretrained(model_name).cuda()
+    original_size = sum(p.element_size() * p.nelement() for p in model.parameters()) / (1024 * 1024)  # Size in MB
+    return model, tokenizer, original_size
 
 def quantize_tensor(tensor, bits):
     """Quantize a tensor to the specified number of bits."""
@@ -72,11 +82,33 @@ def apply_config(model, config):
     model.quantized_state = quantized_state
     return model
 
+# def forward_with_signals_batched(model, input_ids):
+#     """Run a batched forward pass and return probabilities, hidden states, and attentions."""
+#     with torch.no_grad():
+#         output = model(input_ids=input_ids, output_hidden_states=True, output_attentions=True)
+#         probs = torch.softmax(output.logits, dim=-1)
+#         hidden_states = output.hidden_states[-1]
+#         attention_matrices = {f"layer_{i}": attn for i, attn in enumerate(output.attentions)}
+#         return {"probs": probs, "attention_matrices": attention_matrices, "hidden_states": hidden_states}
+
 def forward_with_signals_batched(model, input_ids):
-    """Run a batched forward pass and return probabilities, hidden states, and attentions."""
-    with torch.no_grad():
-        output = model(input_ids=input_ids, output_hidden_states=True, output_attentions=True)
-        probs = torch.softmax(output.logits, dim=-1)
-        hidden_states = output.hidden_states[-1]
-        attention_matrices = {f"layer_{i}": attn for i, attn in enumerate(output.attentions)}
-        return {"probs": probs, "attention_matrices": attention_matrices, "hidden_states": hidden_states}
+    """Forward pass with signals."""
+    outputs = model(input_ids, output_attentions=True, output_hidden_states=True)
+    return {
+        "probs": outputs.logits.softmax(dim=-1),
+        "attention_matrices": outputs.attentions,
+        "hidden_states": outputs.hidden_states
+    }
+
+
+def log_quantized_size(model, layer_bits):
+    """Estimate quantized model size."""
+    total_size = 0
+    for name, param in model.named_parameters():
+        for pattern, bits in layer_bits.items():
+            if pattern in name:
+                total_size += param.nelement() * (bits / 8) / (1024 * 1024)  # Bytes to MB
+                break
+        else:
+            total_size += param.element_size() * param.nelement() / (1024 * 1024)
+    return total_size
