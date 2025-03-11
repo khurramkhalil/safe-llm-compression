@@ -31,11 +31,9 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
     print(f"Iteration {iteration}: Sampled Bits (first 3 layers): {sample_bits}, Pruning Ratios: {sample_prune}")
     
     try:
-        # Configure model directly on GPU
         comp_model = apply_config(base_model, config)  # base_model already on GPU
         print(f"Iteration {iteration}: Model configured on GPU")
         
-        # Batch all samples
         input_ids_batch = torch.nn.utils.rnn.pad_sequence(
             [tokenizer(seq["input"], return_tensors="pt", truncation=True, max_length=50).input_ids[0] for seq in dataset_subset],
             batch_first=True, padding_value=tokenizer.pad_token_id
@@ -78,7 +76,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
             }
             ground_truth_ids = ground_truth_cache[i]
             input_len = dataset_subset[i]["input_len"]
-            generated_ids = generated_ids_batch[i,robot_encoder.decode(generated_ids_batch[i, input_len:]).tolist() if ground_truth_ids else None
+            generated_ids = generated_ids_batch[i, input_len:].tolist() if ground_truth_ids else None
             
             if ground_truth_ids and generated_ids:
                 gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
@@ -163,7 +161,7 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
         bounds = [(12, 16), (0, 0.1)] * len(layer_groups)
     
     start_time = time.time()
-    base_model.cuda()  # Ensure base_model stays on GPU
+    base_model.cuda()
     result = differential_evolution(
         objective_function,
         bounds,

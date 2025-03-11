@@ -21,7 +21,6 @@ def load_config(config_path="config/config.yaml"):
     return config
 
 def main():
-    """Main function to run the LLM compression optimization."""
     config = load_config()
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     save_dir = config['model']['save_dir']
@@ -34,6 +33,7 @@ def main():
         model_name=config['model']['name'],
         save_dir=save_dir
     )
+    base_model.cuda()  # Keep on GPU
 
     print("Preprocessing dataset...")
     dataset_subset, ground_truth_cache = load_and_preprocess_data(
@@ -43,13 +43,11 @@ def main():
     preprocess_time = time.time() - start_time
 
     print("Computing base signals...")
-    batch_size = config['misc']['batch_size']
     input_ids_batch = torch.nn.utils.rnn.pad_sequence(
         [tokenizer(seq["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length']).input_ids[0] for seq in dataset_subset],
         batch_first=True, padding_value=tokenizer.pad_token_id
     ).cuda()
     base_signals_full_batch = forward_with_signals_batched(base_model, input_ids_batch)
-    # Keep base_signals_cache on GPU until optimization
     base_signals_cache = [
         {
             "probs": base_signals_full_batch["probs"][i:i+1],
@@ -59,8 +57,8 @@ def main():
         for i in range(len(dataset_subset))
     ]
     print("Base signals computed for all samples")
-    del base_signals_full_batch
-    gc.collect()  # Force garbage collection
+    del base_signals_full_batch, input_ids_batch
+    gc.collect()
 
     print("Performing baseline evaluation...")
     specs = define_stl_specifications(
@@ -93,15 +91,16 @@ def main():
             gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
             gt_text = tokenizer.decode(ground_truth_ids, skip_special_tokens=True)
             print(f"Baseline Sample 0: Input={dataset_subset[0]['input']}, Ground Truth='{gt_text}', Generated='{gen_text}'")
-            del gen_output
-        del input_ids_batch
+            del gen_output, input_ids_batch
         clear_gpu_memory()
     robustness, falsified = monitor_stl_signals(base_signals, base_signals, specs, ground_truth_ids, input_len, generated_ids)
+    for k in robustness:
+        if not isinstance(robustness[k], (int, float)) or np.isnan(robustness[k]):
+            robustness[k] = 0.0
     print("Uncompressed Robustness:", robustness, "Falsified:", falsified)
     print(f"Baseline: Seq_Coh={robustness['seq_coh']:.4f}, Long_Range={robustness['long_range']:.4f}, "
           f"Ctx_Cons={robustness['ctx_cons']:.4f}, Fact_Acc={robustness['fact_acc']:.4f}")
 
-    # Log baseline
     os.makedirs("results", exist_ok=True)
     with open(f"results/{model_name}_baseline.csv", 'w', newline='') as f:
         writer = csv.writer(f)
@@ -127,7 +126,7 @@ def main():
     total_time = time.time() - start_time
     print(f"Total Runtime: {total_time:.2f} seconds, Preprocessing: {preprocess_time:.2f} seconds")
     
-    del base_model, base_signals_cache  # Final cleanup
+    del base_signals_cache
     clear_gpu_memory()
     gc.collect()
     print("Optimization completed successfully.")
