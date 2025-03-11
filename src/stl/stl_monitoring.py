@@ -85,7 +85,7 @@ def compute_signals(base_signals, comp_signals, ground_truth_ids=None, input_len
         h_base_t = h_base[t]  # [hidden_dim]
         h_comp_t = h_comp[t]  # [hidden_dim]
         print(f"Debug: t={t}, h_base[t] shape = {h_base_t.shape}, h_comp[t] shape = {h_comp_t.shape}")
-        cos_value = torch.cosine_similarity(h_base_t, h_comp_t, dim=-1).item()
+        cos_value = torch.cosine_similarity(h_base_t.unsqueeze(0), h_comp_t.unsqueeze(0), dim=-1).item()  # Add dim to make [1, hidden_dim]
         cos_hidden_values.append(cos_value)
     signals["ctx_cons"] = {'time': time_values, 'cos_hidden': cos_hidden_values}
 
