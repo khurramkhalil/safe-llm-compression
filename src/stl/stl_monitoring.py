@@ -77,15 +77,15 @@ def compute_signals(base_signals, comp_signals, ground_truth_ids=None, input_len
     signals["long_range"] = {'time': time_values, 'cos_attn': cos_attn_values}
 
     # Contextual Consistency: Cosine similarity of hidden states
-    h_base = base_signals["hidden_states"][-1].squeeze(0)  # Last layer, [seq_len, hidden_dim]
-    h_comp = comp_signals["hidden_states"][-1].squeeze(0)  # Last layer, [seq_len, hidden_dim]
+    h_base = base_signals["hidden_states"][0].squeeze(0)  # First item in tuple, [seq_len, hidden_dim]
+    h_comp = comp_signals["hidden_states"][0].squeeze(0)  # First item in tuple, [seq_len, hidden_dim]
     print(f"Debug: h_base shape after squeeze = {h_base.shape}")
     cos_hidden_values = []
     for t in range(seq_len):
         h_base_t = h_base[t]  # [hidden_dim]
         h_comp_t = h_comp[t]  # [hidden_dim]
         print(f"Debug: t={t}, h_base[t] shape = {h_base_t.shape}, h_comp[t] shape = {h_comp_t.shape}")
-        cos_value = torch.cosine_similarity(h_base_t.unsqueeze(0), h_comp_t.unsqueeze(0), dim=-1).item()  # Add dim to make [1, hidden_dim]
+        cos_value = torch.cosine_similarity(h_base_t.unsqueeze(0), h_comp_t.unsqueeze(0), dim=-1).item()
         cos_hidden_values.append(cos_value)
     signals["ctx_cons"] = {'time': time_values, 'cos_hidden': cos_hidden_values}
 
