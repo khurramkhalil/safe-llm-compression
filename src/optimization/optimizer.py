@@ -3,7 +3,7 @@ from scipy.optimize import differential_evolution
 import numpy as np
 import os
 from src.models.model_utils import reset_model, apply_config, forward_with_signals_batched, log_quantized_size
-from src.stl.stl_monitoring import monitor_stl_signals  # Correct import
+from src.stl.stl_monitoring import monitor_stl_signals
 from src.utils.common_utils import clear_gpu_memory
 
 # Global variables for tracking optimization state
@@ -21,7 +21,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
     config = {"layers": []}
     for i, group in enumerate(layer_groups):
         bits = int(max(12, min(16, params[i * 2])))
-        prune_amount = max(0, min(0.1, params[i * 2 + 1]))
+        prune_amount = float(max(0, min(0.1, params[i * 2 + 1])))  # Convert np.float64 to float
         config["layers"].append({"pattern": group["pattern"], "bits": bits, "prune": prune_amount})
     
     sample_bits = [layer["bits"] for layer in config["layers"][:3]]
@@ -29,11 +29,14 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
     print(f"Iteration {iteration}: Sampled Bits (first 3 layers): {sample_bits}, Pruning Ratios: {sample_prune}")
     
     try:
-        comp_model = reset_model(base_model)
+        # Configure model on CPU first
+        comp_model = reset_model(base_model).to('cpu')
         comp_model = apply_config(comp_model, config)
-        print(f"Iteration {iteration}: Model configured")
+        print(f"Iteration {iteration}: Model configured on CPU")
         
-        batch_size = 1  # Reduced for memory efficiency
+        # Move to GPU only for computation
+        comp_model = comp_model.cuda()
+        batch_size = 1
         input_ids_batch = torch.nn.utils.rnn.pad_sequence(
             [tokenizer(seq["input"], return_tensors="pt", truncation=True, max_length=50).input_ids[0] for seq in dataset_subset],
             batch_first=True, padding_value=tokenizer.pad_token_id
@@ -67,9 +70,9 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                             pad_token_id=tokenizer.pad_token_id,
                             eos_token_id=None,
                             do_sample=False,
-                            num_beams=5,
+                            num_beams=1,  # Reduce beams to lower memory
                             return_dict_in_generate=True,
-                            output_scores=True,
+                            output_scores=False,  # Skip scores to save memory
                             no_repeat_ngram_size=2,
                             repetition_penalty=1.2
                         )
@@ -88,6 +91,10 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                     robustness_sum[k] += robustness[k]
                 sample_count += 1
                 print(f"Iteration {iteration}: Sample {i} processed, Robustness={robustness}, Falsified={falsified}")
+                
+                # Clear intermediate tensors
+                if 'gen_output' in locals():
+                    del gen_output
             except Exception as e:
                 print(f"Iteration {iteration}: Sample {i} failed - {str(e)}")
                 robustness = {'seq_coh': 0.0, 'long_range': 0.0, 'ctx_cons': 0.0, 'fact_acc': 0.0}
@@ -97,8 +104,9 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 for k in robustness_sum:
                     robustness_sum[k] += robustness[k]
                 sample_count += 1
-            clear_gpu_memory()  # Free memory after each sample
+            clear_gpu_memory()
         
+        # Compute size and objective
         layer_bits = {l["pattern"]: l["bits"] for l in config["layers"]}
         size_mb = log_quantized_size(comp_model, layer_bits)
         compression_ratio = size_mb / original_size
@@ -106,15 +114,18 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         
         robustness_avg = {k: v / sample_count for k, v in robustness_sum.items()}
         
+        # Save best model
         if objective < best_objective:
             if best_params is not None:
-                prev_model = reset_model(base_model)
+                prev_model = reset_model(base_model).to('cpu')
                 prev_config = {"layers": [{"pattern": group["pattern"], "bits": int(max(12, min(16, best_params[j * 2]))), 
-                                           "prune": max(0, min(0.1, best_params[j * 2 + 1]))} 
+                                           "prune": float(max(0, min(0.1, best_params[j * 2 + 1])))} 
                                           for j, group in enumerate(layer_groups)]}
                 prev_model = apply_config(prev_model, prev_config)
                 prev_model.save_pretrained(os.path.join(save_dir, f"prev_best_model_iter_{iteration-1}"))
+                del prev_model
             
+            comp_model.to('cpu')  # Move to CPU before saving
             comp_model.save_pretrained(os.path.join(save_dir, f"best_model_iter_{iteration}"))
             prev_params = best_params
             prev_objective = best_objective
@@ -134,19 +145,22 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         print(f"Size = {size_mb:.2f} MB, Compression Ratio = {compression_ratio:.2%}")
         print(f"Iteration {iteration}: Objective computation completed")
         
-        clear_gpu_memory()  # Free memory before exiting
+        # Cleanup
+        del comp_model, comp_signals, input_ids_batch
+        clear_gpu_memory()
         return objective
     
     except Exception as e:
         print(f"Iteration {iteration}: Fatal error - {str(e)}")
-        clear_gpu_memory()  # Ensure memory is freed on error
+        if 'comp_model' in locals():
+            del comp_model
+        clear_gpu_memory()
         raise
 
 def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", bounds=None):
     """Run differential evolution optimization to find the best compression configuration."""
     global iteration, best_objective, best_params, prev_params, prev_objective, falsified_configs
     
-    # Reset global variables
     iteration = 0
     best_objective = float('inf')
     best_params = None
@@ -155,14 +169,14 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     falsified_configs = []
     
     if bounds is None:
-        bounds = [(12, 16), (0, 0.1)] * len(layer_groups)  # Fallback if not provided
+        bounds = [(12, 16), (0, 0.1)] * len(layer_groups)
     
     result = differential_evolution(
         objective_function,
         bounds,
         args=(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir),
         strategy='rand1bin',
-        popsize=5,  # These could also be moved to config if desired
+        popsize=5,
         maxiter=2,
         tol=1e-3,
         disp=True,

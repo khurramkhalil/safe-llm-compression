@@ -20,28 +20,22 @@ def load_config(config_path="config/config.yaml"):
 
 def main():
     """Main function to run the LLM compression optimization."""
-    # Load configuration
     config = load_config()
-
-    # Set environment variable for memory management
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     save_dir = config['model']['save_dir']
 
-    # Load model and tokenizer
     print("Loading base model...")
     base_model, tokenizer, original_size = load_base_model(
         model_name=config['model']['name'],
         save_dir=save_dir
     )
 
-    # Load and preprocess dataset
     print("Preprocessing dataset...")
     dataset_subset, ground_truth_cache = load_and_preprocess_data(
         tokenizer=tokenizer,
         num_samples=config['dataset']['num_samples']
     )
 
-    # Precompute base signals
     print("Computing base signals...")
     batch_size = config['misc']['batch_size']
     input_ids_batch = torch.nn.utils.rnn.pad_sequence(
@@ -51,15 +45,16 @@ def main():
     base_signals_full_batch = forward_with_signals_batched(base_model, input_ids_batch)
     base_signals_cache = [
         {
-            "probs": base_signals_full_batch["probs"][i:i+1],
-            "attention_matrices": {k: v[i:i+1] for k, v in base_signals_full_batch["attention_matrices"].items()},
-            "hidden_states": base_signals_full_batch["hidden_states"][i:i+1]
+            "probs": base_signals_full_batch["probs"][i:i+1].cpu(),  # Move to CPU
+            "attention_matrices": {k: v[i:i+1].cpu() for k, v in base_signals_full_batch["attention_matrices"].items()},
+            "hidden_states": base_signals_full_batch["hidden_states"][i:i+1].cpu()
         }
         for i in range(len(dataset_subset))
     ]
     print("Base signals computed for all samples")
+    del base_signals_full_batch, input_ids_batch
+    clear_gpu_memory()
 
-    # Baseline evaluation
     print("Performing baseline evaluation...")
     specs = define_stl_specifications(
         k=config['stl']['k'],
@@ -80,9 +75,9 @@ def main():
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=None,
                 do_sample=False,
-                num_beams=5,
+                num_beams=1,  # Match optimization
                 return_dict_in_generate=True,
-                output_scores=True,
+                output_scores=False,
                 no_repeat_ngram_size=2,
                 repetition_penalty=1.2
             )
@@ -90,12 +85,16 @@ def main():
             gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
             gt_text = tokenizer.decode(ground_truth_ids, skip_special_tokens=True)
             print(f"Baseline Sample 0: Input={dataset_subset[0]['input']}, Ground Truth='{gt_text}', Generated='{gen_text}'")
+            del gen_output
     robustness, falsified = monitor_stl_signals(base_signals, base_signals, specs, ground_truth_ids, input_len, generated_ids)
     print("Uncompressed Robustness:", robustness, "Falsified:", falsified)
     print(f"Baseline: Seq_Coh={robustness['seq_coh']:.4f}, Long_Range={robustness['long_range']:.4f}, "
           f"Ctx_Cons={robustness['ctx_cons']:.4f}, Fact_Acc={robustness['fact_acc']:.4f}")
 
-    # Run optimization
+    # Move base_model to CPU before optimization
+    base_model.to('cpu')
+    clear_gpu_memory()
+
     print("Starting optimization...")
     layer_groups = get_layer_groups(base_model)
     bounds = [tuple(config['optimization']['bounds']['bits']), tuple(config['optimization']['bounds']['prune'])] * len(layer_groups)
@@ -111,7 +110,6 @@ def main():
         save_dir=save_dir
     )
 
-    # Final cleanup
     clear_gpu_memory()
     print("Optimization completed successfully.")
 
