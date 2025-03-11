@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from rtamt import StlDiscreteTimeSpecification
 
-def define_stl_specifications(k=5, epsilon=0.1, delta=0.2, gamma=0.4, tau=0.5):
+def define_stl_specifications(k=5, epsilon=0.5, delta=0.2, gamma=0.2, tau=0.5):
     """Define STL specifications for model behavior monitoring."""
     # Sequence Coherence: JSD <= epsilon for first k tokens
     seq_coh_spec = StlDiscreteTimeSpecification()
