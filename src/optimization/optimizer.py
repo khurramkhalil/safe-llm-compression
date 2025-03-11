@@ -9,7 +9,7 @@ from src.models.model_utils import reset_model, apply_config, forward_with_signa
 from src.stl.stl_monitoring import monitor_stl_signals
 from src.utils.common_utils import clear_gpu_memory
 
-# Global variables for tracking optimization state
+# Global variables
 iteration = 0
 best_objective = float('inf')
 best_params = None
@@ -18,7 +18,6 @@ prev_objective = float('inf')
 falsified_configs = []
 
 def objective_function(params, base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", model_name="unknown"):
-    """Compute the objective value for a given set of optimization parameters."""
     global iteration, best_objective, best_params, prev_params, prev_objective, falsified_configs
     iteration += 1
     config = {"layers": []}
@@ -32,108 +31,97 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
     print(f"Iteration {iteration}: Sampled Bits (first 3 layers): {sample_bits}, Pruning Ratios: {sample_prune}")
     
     try:
-        comp_model = reset_model(base_model).to('cpu')
-        comp_model = apply_config(comp_model, config)
-        print(f"Iteration {iteration}: Model configured on CPU")
+        # Configure model directly on GPU
+        comp_model = apply_config(base_model, config)  # base_model already on GPU
+        print(f"Iteration {iteration}: Model configured on GPU")
         
-        comp_model = comp_model.cuda()
-        batch_size = 1
+        # Batch all samples
         input_ids_batch = torch.nn.utils.rnn.pad_sequence(
             [tokenizer(seq["input"], return_tensors="pt", truncation=True, max_length=50).input_ids[0] for seq in dataset_subset],
             batch_first=True, padding_value=tokenizer.pad_token_id
         ).cuda()
-        print(f"Iteration {iteration}: Input batch prepared with batch_size={batch_size}")
+        print(f"Iteration {iteration}: Input batch prepared with batch_size={input_ids_batch.shape[0]}")
         
         comp_signals = forward_with_signals_batched(comp_model, input_ids_batch)
         print(f"Iteration {iteration}: Forward pass completed")
         
+        # Generate outputs for all samples with ground truth
+        generated_ids_batch = []
+        max_new_tokens = max([len(gt) for gt in ground_truth_cache if gt is not None])
+        with torch.no_grad():
+            gen_output = comp_model.generate(
+                input_ids_batch,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=None,
+                do_sample=False,
+                num_beams=1,
+                return_dict_in_generate=True,
+                output_scores=False,
+                no_repeat_ngram_size=2,
+                repetition_penalty=1.2
+            )
+            generated_ids_batch = gen_output.sequences
+            del gen_output
+        
         total_robustness = 0.0
         falsification_count = 0
         robustness_sum = {k: 0.0 for k in ['seq_coh', 'long_range', 'ctx_cons', 'fact_acc']}
-        sample_count = 0
+        sample_count = len(dataset_subset)
         
-        for i in range(len(dataset_subset)):
-            try:
-                base_signals = base_signals_cache[i]
-                comp_signals_batch = {
-                    "probs": comp_signals["probs"][i:i+1],
-                    "attention_matrices": {k: v[i:i+1] for k, v in comp_signals["attention_matrices"].items()},
-                    "hidden_states": comp_signals["hidden_states"][i:i+1]
-                }
-                ground_truth_ids = ground_truth_cache[i]
-                input_len = dataset_subset[i]["input_len"]
-                generated_ids = None
-                if ground_truth_ids:
-                    with torch.no_grad():
-                        gen_output = comp_model.generate(
-                            input_ids_batch[i:i+1],
-                            max_new_tokens=len(ground_truth_ids),
-                            pad_token_id=tokenizer.pad_token_id,
-                            eos_token_id=None,
-                            do_sample=False,
-                            num_beams=1,
-                            return_dict_in_generate=True,
-                            output_scores=False,
-                            no_repeat_ngram_size=2,
-                            repetition_penalty=1.2
-                        )
-                        generated_ids = gen_output.sequences[0, input_len:].tolist()
-                        if len(generated_ids) < len(ground_truth_ids):
-                            generated_ids.extend([tokenizer.pad_token_id] * (len(ground_truth_ids) - len(generated_ids)))
-                        elif len(generated_ids) > len(ground_truth_ids):
-                            generated_ids = generated_ids[:len(ground_truth_ids)]
-                        gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                        gt_text = tokenizer.decode(ground_truth_ids, skip_special_tokens=True)
-                        print(f"Sample {i}: Input={dataset_subset[i]['input']}, Ground Truth='{gt_text}', Generated='{gen_text}'")
-                robustness, falsified = monitor_stl_signals(base_signals, comp_signals_batch, specs, ground_truth_ids, input_len, generated_ids)
-                total_robustness += sum(robustness.values())
-                falsification_count += any(falsified.values())
-                for k in robustness_sum:
-                    robustness_sum[k] += robustness[k]
-                sample_count += 1
-                print(f"Iteration {iteration}: Sample {i} processed, Robustness={robustness}, Falsified={falsified}")
-                if 'gen_output' in locals():
-                    del gen_output
-            except Exception as e:
-                print(f"Iteration {iteration}: Sample {i} failed - {str(e)}")
-                robustness = {'seq_coh': 0.0, 'long_range': 0.0, 'ctx_cons': 0.0, 'fact_acc': 0.0}
-                falsified = {'seq_coh': False, 'long_range': False, 'ctx_cons': False, 'fact_acc': False}
-                total_robustness += sum(robustness.values())
-                falsification_count += any(falsified.values())
-                for k in robustness_sum:
-                    robustness_sum[k] += robustness[k]
-                sample_count += 1
-            clear_gpu_memory()
+        for i in range(sample_count):
+            base_signals = base_signals_cache[i]
+            comp_signals_batch = {
+                "probs": comp_signals["probs"][i:i+1],
+                "attention_matrices": {k: v[i:i+1] for k, v in comp_signals["attention_matrices"].items()},
+                "hidden_states": comp_signals["hidden_states"][i:i+1]
+            }
+            ground_truth_ids = ground_truth_cache[i]
+            input_len = dataset_subset[i]["input_len"]
+            generated_ids = generated_ids_batch[i,robot_encoder.decode(generated_ids_batch[i, input_len:]).tolist() if ground_truth_ids else None
+            
+            if ground_truth_ids and generated_ids:
+                gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                gt_text = tokenizer.decode(ground_truth_ids, skip_special_tokens=True)
+                print(f"Sample {i}: Input={dataset_subset[i]['input']}, Ground Truth='{gt_text}', Generated='{gen_text}'")
+            
+            robustness, falsified = monitor_stl_signals(base_signals, comp_signals_batch, specs, ground_truth_ids, input_len, generated_ids)
+            # Handle NaNs
+            for k in robustness:
+                if not isinstance(robustness[k], (int, float)) or np.isnan(robustness[k]):
+                    robustness[k] = 0.0
+            total_robustness += sum(robustness.values())
+            falsification_count += any(falsified.values())
+            for k in robustness_sum:
+                robustness_sum[k] += robustness[k]
+            print(f"Iteration {iteration}: Sample {i} processed, Robustness={robustness}, Falsified={falsified}")
         
         layer_bits = {l["pattern"]: l["bits"] for l in config["layers"]}
         size_mb = log_quantized_size(comp_model, layer_bits)
         compression_ratio = size_mb / original_size
+        energy_gains = (original_size - size_mb) / original_size * 100
         objective = -total_robustness + 1.0 * size_mb
         
         robustness_avg = {k: v / sample_count for k, v in robustness_sum.items()}
         
-        # Log to CSV
         os.makedirs("results", exist_ok=True)
         log_file = f"results/{model_name}_logs.csv"
-        energy_gains = (original_size - size_mb) / original_size * 100  # Add energy gains
         with open(log_file, 'a', newline='') as f:
             writer = csv.writer(f)
             if iteration == 1:
                 writer.writerow(["iteration", "objective", "size_mb", "compression_ratio", "seq_coh", "long_range", "ctx_cons", "fact_acc", "falsified", "bits_1", "prune_1", "bits_2", "prune_2", "bits_3", "prune_3", "energy_gains"])
             writer.writerow([iteration, objective, size_mb, compression_ratio, robustness_avg['seq_coh'], robustness_avg['long_range'], robustness_avg['ctx_cons'], robustness_avg['fact_acc'], falsification_count, 
                             sample_bits[0], sample_prune[0], sample_bits[1], sample_prune[1], sample_bits[2], sample_prune[2], energy_gains])
-
-        if objective < best_objective:
+        
+        if objective < best_objective and not np.isnan(objective):
             if best_params is not None:
-                prev_model = reset_model(base_model).to('cpu')
                 prev_config = {"layers": [{"pattern": group["pattern"], "bits": int(max(12, min(16, best_params[j * 2]))), 
                                            "prune": float(max(0, min(0.1, best_params[j * 2 + 1])))} 
                                           for j, group in enumerate(layer_groups)]}
-                prev_model = apply_config(prev_model, prev_config)
+                prev_model = apply_config(base_model, prev_config)
                 prev_model.save_pretrained(os.path.join(save_dir, f"prev_best_model_iter_{iteration-1}"))
                 del prev_model
             
-            comp_model.to('cpu')
             comp_model.save_pretrained(os.path.join(save_dir, f"best_model_iter_{iteration}"))
             prev_params = best_params
             prev_objective = best_objective
@@ -146,26 +134,22 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         if falsification_count > 0:
             falsified_configs.append((params.copy(), falsification_count, robustness.copy()))
         
-        print(f"Iteration {iteration}: Falsified {falsification_count}/{len(dataset_subset)} samples")
+        print(f"Iteration {iteration}: Falsified {falsification_count}/{sample_count} samples")
         print(f"Objective = {objective:.4f}, Total Robustness = {total_robustness:.4f}, "
               f"Seq_Coh = {robustness_avg['seq_coh']:.4f}, Long_Range = {robustness_avg['long_range']:.4f}, "
               f"Ctx_Cons = {robustness_avg['ctx_cons']:.4f}, Fact_Acc = {robustness_avg['fact_acc']:.4f}")
         print(f"Size = {size_mb:.2f} MB, Compression Ratio = {compression_ratio:.2%}")
         print(f"Iteration {iteration}: Objective computation completed")
         
-        del comp_model, comp_signals, input_ids_batch
-        clear_gpu_memory()
+        del comp_signals, input_ids_batch, generated_ids_batch
         return objective
     
     except Exception as e:
         print(f"Iteration {iteration}: Fatal error - {str(e)}")
-        if 'comp_model' in locals():
-            del comp_model
         clear_gpu_memory()
         raise
 
 def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", bounds=None, model_name="unknown"):
-    """Run differential evolution optimization to find the best compression configuration."""
     global iteration, best_objective, best_params, prev_params, prev_objective, falsified_configs
     
     iteration = 0
@@ -179,6 +163,7 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
         bounds = [(12, 16), (0, 0.1)] * len(layer_groups)
     
     start_time = time.time()
+    base_model.cuda()  # Ensure base_model stays on GPU
     result = differential_evolution(
         objective_function,
         bounds,
@@ -200,14 +185,13 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     for params, count, robustness in falsified_configs:
         print(f"Params (first 6): {params[:6]}..., Falsified Samples: {count}, Robustness: {robustness}")
     
-    # Log summary using the best iteration from logs
     log_file = f"results/{model_name}_logs.csv"
     if os.path.exists(log_file):
         logs = pd.read_csv(log_file)
         best_row = logs.loc[logs['objective'].idxmin()]
         best_size_mb = best_row['size_mb']
         best_compression_ratio = best_row['compression_ratio']
-        best_energy_gains = best_row['energy_gains']  # Add to summary
+        best_energy_gains = best_row['energy_gains']
         os.makedirs("results", exist_ok=True)
         with open(f"results/{model_name}_summary.csv", 'w', newline='') as f:
             writer = csv.writer(f)
