@@ -4,7 +4,6 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 import torch
-import numpy as np
 import yaml
 import csv
 import time
@@ -16,7 +15,6 @@ from src.optimization.optimizer import run_optimization
 from src.utils.common_utils import clear_gpu_memory
 
 def load_config(config_path="config/config.yaml"):
-    """Load configuration from a YAML file."""
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     return config
@@ -43,9 +41,34 @@ def main():
     )
     preprocess_time = time.time() - start_time
 
+    print("Testing baseline generation...")
+    for i, sample in enumerate(dataset_subset[:5]):  # Test first 5 samples
+        input_ids = tokenizer(sample["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length'], padding='left').input_ids.cuda()
+        ground_truth_ids = ground_truth_cache[i]
+        input_len = sample["input_len"]
+        with torch.no_grad():
+            gen_output = base_model.generate(
+                input_ids,
+                max_new_tokens=len(ground_truth_ids) if ground_truth_ids else 50,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                do_sample=False,
+                num_beams=1,
+                return_dict_in_generate=True,
+                output_scores=False,
+                no_repeat_ngram_size=2,
+                repetition_penalty=1.0
+            )
+            generated_ids = gen_output.sequences[0, input_len:].tolist()
+            gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+            gt_text = tokenizer.decode(ground_truth_ids, skip_special_tokens=True) if ground_truth_ids else "N/A"
+            print(f"Sample {i}: Input={sample['input']}, Ground Truth='{gt_text}', Generated='{gen_text}'")
+        del gen_output, input_ids
+    clear_gpu_memory()
+
     print("Computing base signals...")
     input_ids_batch = torch.nn.utils.rnn.pad_sequence(
-        [tokenizer(seq["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length']).input_ids[0] for seq in dataset_subset],
+        [tokenizer(seq["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length'], padding='left').input_ids[0] for seq in dataset_subset],
         batch_first=True, padding_value=tokenizer.pad_token_id
     ).cuda()
     base_signals_full_batch = forward_with_signals_batched(base_model, input_ids_batch)
@@ -80,13 +103,13 @@ def main():
                 input_ids_batch,
                 max_new_tokens=len(ground_truth_ids),
                 pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=None,
+                eos_token_id=tokenizer.eos_token_id,
                 do_sample=False,
                 num_beams=1,
                 return_dict_in_generate=True,
                 output_scores=False,
                 no_repeat_ngram_size=2,
-                repetition_penalty=1.2
+                repetition_penalty=1.0
             )
             generated_ids = gen_output.sequences[0, input_len:].tolist()
             gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
@@ -110,7 +133,7 @@ def main():
 
     print("Starting optimization...")
     layer_groups = get_layer_groups(base_model)
-    bounds = [tuple(config['optimization']['bounds']['bits']), tuple(config['optimization']['bounds']['prune'])] * len(layer_groups)
+    bounds = [(14, 16), (0, 0.05)] * len(layer_groups)  # Tighter bounds to minimize compression impact
     run_optimization(
         base_model=base_model,
         dataset_subset=dataset_subset,
@@ -121,7 +144,8 @@ def main():
         specs=specs,
         original_size=original_size,
         save_dir=save_dir,
-        model_name=model_name
+        model_name=model_name,
+        bounds=bounds
     )
 
     total_time = time.time() - start_time
