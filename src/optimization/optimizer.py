@@ -19,7 +19,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
     iteration += 1
     start_iter_time = time.time()
     
-    config = {"layers": []}  # Fixed syntax error: removed duplicate 'config'
+    config = {"layers": []}
     for i, group in enumerate(layer_groups):
         bits = int(max(14, min(16, params[i * 2])))
         prune_amount = float(max(0, min(0.05, params[i * 2 + 1])))
@@ -53,8 +53,8 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 num_beams=1,
                 return_dict_in_generate=True,
                 output_scores=False,
-                no_repeat_ngram_size=2,
-                repetition_penalty=1.0
+                no_repeat_ngram_size=3,  # Prevent repetition
+                repetition_penalty=1.5,  # Penalize repetition
             )
             generated_ids_batch = gen_output.sequences
             del gen_output
@@ -73,11 +73,11 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
             }
             ground_truth_ids = ground_truth_cache[i]
             input_len = dataset_subset[i]["input_len"]
-            generated_ids = generated_ids_batch[i, input_len:].tolist() if ground_truth_ids else None
+            generated_ids = generated_ids_batch[i, input_len:].tolist() if ground_truth_ids else None  # Strip input
             
             if ground_truth_ids and generated_ids:
-                gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                gt_text = tokenizer.decode(ground_truth_ids, skip_special_tokens=True)
+                gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+                gt_text = tokenizer.decode(ground_truth_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
                 print(f"Sample {i}: Input={dataset_subset[i]['input']}, Ground Truth='{gt_text}', Generated='{gen_text}'")
             
             robustness, falsified = monitor_stl_signals(base_signals, comp_signals_batch, specs, ground_truth_ids, input_len, generated_ids)
@@ -89,6 +89,8 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
             for k in robustness_sum:
                 robustness_sum[k] += robustness[k]
             print(f"Iteration {iteration}: Sample {i} processed, Robustness={robustness}, Falsified={falsified}")
+        
+        # ... (rest of the function unchanged) ...
         
         layer_bits = {l["pattern"]: l["bits"] for l in config["layers"]}
         size_mb = log_quantized_size(comp_model, layer_bits)
