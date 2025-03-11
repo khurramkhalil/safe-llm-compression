@@ -1,0 +1,17 @@
+# Core ML and optimization libraries
+torch==2.5.1           # PyTorch for model handling and GPU operations
+transformers==4.46.3   # Hugging Face Transformers for LLMs
+scipy==1.13.1          # Differential evolution optimization
+numpy==1.26.4          # Numerical operations
+
+# Dataset and monitoring
+datasets==2.18.0       # Hugging Face Datasets for data loading
+rtamt==0.3.5           # STL monitoring (assuming a stable release; check exact version)
+
+# Visualization and data handling
+pandas==2.2.2          # Data manipulation for logs and tables
+matplotlib==3.9.2      # Plotting for figures
+pyyaml          # YAML config parsing
+
+# Optional (uncomment if used later)
+ptflops==0.7.2       # For FLOPS computation (if you decide to use it for energy gains)

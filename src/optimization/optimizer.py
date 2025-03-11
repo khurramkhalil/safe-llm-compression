@@ -2,6 +2,9 @@ import torch
 from scipy.optimize import differential_evolution
 import numpy as np
 import os
+import csv
+import time
+import pandas as pd
 from src.models.model_utils import reset_model, apply_config, forward_with_signals_batched, log_quantized_size
 from src.stl.stl_monitoring import monitor_stl_signals
 from src.utils.common_utils import clear_gpu_memory
@@ -14,14 +17,14 @@ prev_params = None
 prev_objective = float('inf')
 falsified_configs = []
 
-def objective_function(params, base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/"):
+def objective_function(params, base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", model_name="unknown"):
     """Compute the objective value for a given set of optimization parameters."""
     global iteration, best_objective, best_params, prev_params, prev_objective, falsified_configs
     iteration += 1
     config = {"layers": []}
     for i, group in enumerate(layer_groups):
         bits = int(max(12, min(16, params[i * 2])))
-        prune_amount = float(max(0, min(0.1, params[i * 2 + 1])))  # Convert np.float64 to float
+        prune_amount = float(max(0, min(0.1, params[i * 2 + 1])))
         config["layers"].append({"pattern": group["pattern"], "bits": bits, "prune": prune_amount})
     
     sample_bits = [layer["bits"] for layer in config["layers"][:3]]
@@ -29,12 +32,10 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
     print(f"Iteration {iteration}: Sampled Bits (first 3 layers): {sample_bits}, Pruning Ratios: {sample_prune}")
     
     try:
-        # Configure model on CPU first
         comp_model = reset_model(base_model).to('cpu')
         comp_model = apply_config(comp_model, config)
         print(f"Iteration {iteration}: Model configured on CPU")
         
-        # Move to GPU only for computation
         comp_model = comp_model.cuda()
         batch_size = 1
         input_ids_batch = torch.nn.utils.rnn.pad_sequence(
@@ -70,9 +71,9 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                             pad_token_id=tokenizer.pad_token_id,
                             eos_token_id=None,
                             do_sample=False,
-                            num_beams=1,  # Reduce beams to lower memory
+                            num_beams=1,
                             return_dict_in_generate=True,
-                            output_scores=False,  # Skip scores to save memory
+                            output_scores=False,
                             no_repeat_ngram_size=2,
                             repetition_penalty=1.2
                         )
@@ -91,8 +92,6 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                     robustness_sum[k] += robustness[k]
                 sample_count += 1
                 print(f"Iteration {iteration}: Sample {i} processed, Robustness={robustness}, Falsified={falsified}")
-                
-                # Clear intermediate tensors
                 if 'gen_output' in locals():
                     del gen_output
             except Exception as e:
@@ -106,7 +105,6 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 sample_count += 1
             clear_gpu_memory()
         
-        # Compute size and objective
         layer_bits = {l["pattern"]: l["bits"] for l in config["layers"]}
         size_mb = log_quantized_size(comp_model, layer_bits)
         compression_ratio = size_mb / original_size
@@ -114,7 +112,17 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         
         robustness_avg = {k: v / sample_count for k, v in robustness_sum.items()}
         
-        # Save best model
+        # Log to CSV
+        os.makedirs("results", exist_ok=True)
+        log_file = f"results/{model_name}_logs.csv"
+        energy_gains = (original_size - size_mb) / original_size * 100  # Add energy gains
+        with open(log_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            if iteration == 1:
+                writer.writerow(["iteration", "objective", "size_mb", "compression_ratio", "seq_coh", "long_range", "ctx_cons", "fact_acc", "falsified", "bits_1", "prune_1", "bits_2", "prune_2", "bits_3", "prune_3", "energy_gains"])
+            writer.writerow([iteration, objective, size_mb, compression_ratio, robustness_avg['seq_coh'], robustness_avg['long_range'], robustness_avg['ctx_cons'], robustness_avg['fact_acc'], falsification_count, 
+                            sample_bits[0], sample_prune[0], sample_bits[1], sample_prune[1], sample_bits[2], sample_prune[2], energy_gains])
+
         if objective < best_objective:
             if best_params is not None:
                 prev_model = reset_model(base_model).to('cpu')
@@ -125,7 +133,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 prev_model.save_pretrained(os.path.join(save_dir, f"prev_best_model_iter_{iteration-1}"))
                 del prev_model
             
-            comp_model.to('cpu')  # Move to CPU before saving
+            comp_model.to('cpu')
             comp_model.save_pretrained(os.path.join(save_dir, f"best_model_iter_{iteration}"))
             prev_params = best_params
             prev_objective = best_objective
@@ -145,7 +153,6 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         print(f"Size = {size_mb:.2f} MB, Compression Ratio = {compression_ratio:.2%}")
         print(f"Iteration {iteration}: Objective computation completed")
         
-        # Cleanup
         del comp_model, comp_signals, input_ids_batch
         clear_gpu_memory()
         return objective
@@ -157,7 +164,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         clear_gpu_memory()
         raise
 
-def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", bounds=None):
+def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", bounds=None, model_name="unknown"):
     """Run differential evolution optimization to find the best compression configuration."""
     global iteration, best_objective, best_params, prev_params, prev_objective, falsified_configs
     
@@ -171,10 +178,11 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     if bounds is None:
         bounds = [(12, 16), (0, 0.1)] * len(layer_groups)
     
+    start_time = time.time()
     result = differential_evolution(
         objective_function,
         bounds,
-        args=(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir),
+        args=(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir, model_name),
         strategy='rand1bin',
         popsize=5,
         maxiter=2,
@@ -182,12 +190,30 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
         disp=True,
         workers=1
     )
+    runtime = time.time() - start_time
     
     print("\nOptimization Complete:")
     print(f"Best Objective: {best_objective:.4f}")
     print(f"Best Params (first 6): {best_params[:6] if best_params is not None else 'None'}...")
+    print(f"Runtime: {runtime:.2f} seconds")
     print("\nFalsified Configurations:")
     for params, count, robustness in falsified_configs:
         print(f"Params (first 6): {params[:6]}..., Falsified Samples: {count}, Robustness: {robustness}")
+    
+    # Log summary using the best iteration from logs
+    log_file = f"results/{model_name}_logs.csv"
+    if os.path.exists(log_file):
+        logs = pd.read_csv(log_file)
+        best_row = logs.loc[logs['objective'].idxmin()]
+        best_size_mb = best_row['size_mb']
+        best_compression_ratio = best_row['compression_ratio']
+        best_energy_gains = best_row['energy_gains']  # Add to summary
+        os.makedirs("results", exist_ok=True)
+        with open(f"results/{model_name}_summary.csv", 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["original_size_mb", "best_size_mb", "best_compression_ratio", "runtime_s", "best_energy_gains"])
+            writer.writerow([original_size, best_size_mb, best_compression_ratio, runtime, best_energy_gains])
+    else:
+        print(f"Warning: Log file {log_file} not found, skipping summary logging.")
     
     clear_gpu_memory()
