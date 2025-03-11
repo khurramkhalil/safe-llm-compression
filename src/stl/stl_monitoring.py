@@ -77,9 +77,9 @@ def compute_signals(base_signals, comp_signals, ground_truth_ids=None, input_len
     signals["long_range"] = {'time': time_values, 'cos_attn': cos_attn_values}
 
     # Contextual Consistency: Cosine similarity of hidden states
-    h_base = base_signals["hidden_states"][0].squeeze(0)  # First item in tuple, [seq_len, hidden_dim]
-    h_comp = comp_signals["hidden_states"][0].squeeze(0)  # First item in tuple, [seq_len, hidden_dim]
-    print(f"Debug: h_base shape after squeeze = {h_base.shape}")
+    h_base = base_signals["hidden_states"][-1][0]  # Last layer, first sample, [seq_len, hidden_dim]
+    h_comp = comp_signals["hidden_states"][-1][0]  # Last layer, first sample, [seq_len, hidden_dim]
+    print(f"Debug: h_base shape after indexing = {h_base.shape}")
     cos_hidden_values = []
     for t in range(seq_len):
         h_base_t = h_base[t]  # [hidden_dim]
