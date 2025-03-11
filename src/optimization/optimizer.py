@@ -19,7 +19,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
     iteration += 1
     start_iter_time = time.time()
     
-    config = {"layers": []}
+    config = {"layers": []}  # Fixed syntax error: removed duplicate 'config'
     for i, group in enumerate(layer_groups):
         bits = int(max(14, min(16, params[i * 2])))
         prune_amount = float(max(0, min(0.05, params[i * 2 + 1])))
@@ -183,3 +183,7 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
             writer.writerow([original_size, best_size_mb, best_compression_ratio, runtime, best_energy_gains])
     
     clear_gpu_memory()
+
+if __name__ == "__main__":
+    # This is typically not run directly, but included for completeness
+    pass

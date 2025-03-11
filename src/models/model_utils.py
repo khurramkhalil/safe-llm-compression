@@ -93,11 +93,12 @@ def apply_config(model, config):
 #         return {"probs": probs, "attention_matrices": attention_matrices, "hidden_states": hidden_states}
 
 def forward_with_signals_batched(model, input_ids):
-    """Forward pass with signals."""
+    """Forward pass with signals, returning attention as a dict."""
     outputs = model(input_ids, output_attentions=True, output_hidden_states=True)
+    attention_dict = {f"layer_{i}": attn for i, attn in enumerate(outputs.attentions)}  # Convert tuple to dict
     return {
         "probs": outputs.logits.softmax(dim=-1),
-        "attention_matrices": outputs.attentions,
+        "attention_matrices": attention_dict,
         "hidden_states": outputs.hidden_states
     }
 
