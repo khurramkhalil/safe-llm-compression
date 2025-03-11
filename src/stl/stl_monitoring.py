@@ -39,6 +39,10 @@ def compute_signals(base_signals, comp_signals, ground_truth_ids=None, input_len
     signals = {}
     time_values = list(range(seq_len))
 
+    # Debug shapes
+    print(f"Debug: probs shape = {base_signals['probs'].shape}")
+    print(f"Debug: hidden_states len = {len(base_signals['hidden_states'])}, last layer shape = {base_signals['hidden_states'][-1].shape}")
+
     # Sequence Coherence: Jensen-Shannon Divergence
     jsd_values = []
     probs_base = base_signals["probs"].squeeze(0)  # [seq_len, vocab_size]
@@ -73,9 +77,16 @@ def compute_signals(base_signals, comp_signals, ground_truth_ids=None, input_len
     signals["long_range"] = {'time': time_values, 'cos_attn': cos_attn_values}
 
     # Contextual Consistency: Cosine similarity of hidden states
-    h_base = base_signals["hidden_states"][-1].squeeze(0)[:seq_len]  # Last layer, [seq_len, hidden_dim]
-    h_comp = comp_signals["hidden_states"][-1].squeeze(0)[:seq_len]  # Last layer, [seq_len, hidden_dim]
-    cos_hidden_values = [torch.cosine_similarity(h_base[t], h_comp[t], dim=-1).item() for t in range(seq_len)]
+    h_base = base_signals["hidden_states"][-1].squeeze(0)  # Last layer, [seq_len, hidden_dim]
+    h_comp = comp_signals["hidden_states"][-1].squeeze(0)  # Last layer, [seq_len, hidden_dim]
+    print(f"Debug: h_base shape after squeeze = {h_base.shape}")
+    cos_hidden_values = []
+    for t in range(seq_len):
+        h_base_t = h_base[t]  # [hidden_dim]
+        h_comp_t = h_comp[t]  # [hidden_dim]
+        print(f"Debug: t={t}, h_base[t] shape = {h_base_t.shape}, h_comp[t] shape = {h_comp_t.shape}")
+        cos_value = torch.cosine_similarity(h_base_t, h_comp_t, dim=-1).item()
+        cos_hidden_values.append(cos_value)
     signals["ctx_cons"] = {'time': time_values, 'cos_hidden': cos_hidden_values}
 
     # Factual Accuracy: Probability ratio for ground truth tokens
