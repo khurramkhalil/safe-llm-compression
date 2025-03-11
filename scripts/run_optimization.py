@@ -42,8 +42,8 @@ def main():
     preprocess_time = time.time() - start_time
 
     print("Testing baseline generation...")
-    for i, sample in enumerate(dataset_subset[:5]):  # Test first 5 samples
-        input_ids = tokenizer(sample["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length'], padding='left').input_ids.cuda()
+    for i, sample in enumerate(dataset_subset[:5]):
+        input_ids = tokenizer(sample["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length'], padding='max_length').input_ids.cuda()
         ground_truth_ids = ground_truth_cache[i]
         input_len = sample["input_len"]
         with torch.no_grad():
@@ -68,7 +68,7 @@ def main():
 
     print("Computing base signals...")
     input_ids_batch = torch.nn.utils.rnn.pad_sequence(
-        [tokenizer(seq["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length'], padding='left').input_ids[0] for seq in dataset_subset],
+        [tokenizer(seq["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length'], padding='max_length').input_ids[0] for seq in dataset_subset],
         batch_first=True, padding_value=tokenizer.pad_token_id
     ).cuda()
     base_signals_full_batch = forward_with_signals_batched(base_model, input_ids_batch)
@@ -97,7 +97,7 @@ def main():
     input_len = dataset_subset[0]["input_len"]
     generated_ids = None
     if ground_truth_ids:
-        input_ids_batch = tokenizer(dataset_subset[0]["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length'], padding='left').input_ids.cuda()
+        input_ids_batch = tokenizer(dataset_subset[0]["input"], return_tensors="pt", truncation=True, max_length=config['dataset']['max_length'], padding='max_length').input_ids.cuda()
         with torch.no_grad():
             gen_output = base_model.generate(
                 input_ids_batch,
@@ -133,7 +133,7 @@ def main():
 
     print("Starting optimization...")
     layer_groups = get_layer_groups(base_model)
-    bounds = [(14, 16), (0, 0.05)] * len(layer_groups)  # Tighter bounds to minimize compression impact
+    bounds = [(14, 16), (0, 0.05)] * len(layer_groups)
     run_optimization(
         base_model=base_model,
         dataset_subset=dataset_subset,

@@ -23,7 +23,8 @@ comp_model = None
 def load_base_model(model_name, save_dir="./saved_models/"):
     """Load the base model and tokenizer."""
     os.makedirs(save_dir, exist_ok=True)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.padding_side = 'left'  # Set globally for decoder-only model
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     model = AutoModelForCausalLM.from_pretrained(model_name).cuda()
@@ -99,7 +100,6 @@ def forward_with_signals_batched(model, input_ids):
         "attention_matrices": outputs.attentions,
         "hidden_states": outputs.hidden_states
     }
-
 
 def log_quantized_size(model, layer_bits):
     """Estimate quantized model size."""
