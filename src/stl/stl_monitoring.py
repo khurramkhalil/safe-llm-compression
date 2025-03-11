@@ -32,17 +32,20 @@ def define_stl_specifications(k=5, epsilon=0.1, delta=0.2, gamma=0.4, tau=0.5):
 
 def compute_signals(base_signals, comp_signals, ground_truth_ids=None, input_len=None, generated_ids=None):
     """Compute signals for STL monitoring from base and compressed model outputs."""
-    attn_base = list(base_signals["attention_matrices"].values())[0][0] if base_signals["attention_matrices"] else None
-    attn_comp = list(comp_signals["attention_matrices"].values())[0][0] if comp_signals["attention_matrices"] else None
+    # Use first attention layer, squeeze batch dimension
+    attn_base = list(base_signals["attention_matrices"].values())[0].squeeze(0) if base_signals["attention_matrices"] else None
+    attn_comp = list(comp_signals["attention_matrices"].values())[0].squeeze(0) if comp_signals["attention_matrices"] else None
     seq_len = attn_base.size(0) if attn_base is not None else base_signals["probs"].size(1)
     signals = {}
     time_values = list(range(seq_len))
 
     # Sequence Coherence: Jensen-Shannon Divergence
     jsd_values = []
+    probs_base = base_signals["probs"].squeeze(0)  # [seq_len, vocab_size]
+    probs_comp = comp_signals["probs"].squeeze(0)  # [seq_len, vocab_size]
     for t in range(seq_len):
-        p_base = base_signals["probs"][0, t]
-        p_comp = comp_signals["probs"][0, t]
+        p_base = probs_base[t]
+        p_comp = probs_comp[t]
         p_sorted, _ = torch.sort(p_base, descending=True)
         q_sorted, _ = torch.sort(p_comp, descending=True)
         cumsum_p = torch.cumsum(p_sorted, dim=-1)
@@ -70,8 +73,8 @@ def compute_signals(base_signals, comp_signals, ground_truth_ids=None, input_len
     signals["long_range"] = {'time': time_values, 'cos_attn': cos_attn_values}
 
     # Contextual Consistency: Cosine similarity of hidden states
-    h_base = base_signals["hidden_states"][0][:seq_len]
-    h_comp = comp_signals["hidden_states"][0][:seq_len]
+    h_base = base_signals["hidden_states"][-1].squeeze(0)[:seq_len]  # Last layer, [seq_len, hidden_dim]
+    h_comp = comp_signals["hidden_states"][-1].squeeze(0)[:seq_len]  # Last layer, [seq_len, hidden_dim]
     cos_hidden_values = [torch.cosine_similarity(h_base[t], h_comp[t], dim=-1).item() for t in range(seq_len)]
     signals["ctx_cons"] = {'time': time_values, 'cos_hidden': cos_hidden_values}
 
@@ -81,8 +84,8 @@ def compute_signals(base_signals, comp_signals, ground_truth_ids=None, input_len
         for i, t in enumerate(range(input_len, min(input_len + len(ground_truth_ids), seq_len))):
             correct_id = ground_truth_ids[i]
             gen_id = generated_ids[i]
-            p_base_correct = base_signals["probs"][0, t, correct_id].item()
-            p_comp_correct = comp_signals["probs"][0, t, correct_id].item()
+            p_base_correct = probs_base[t, correct_id].item()
+            p_comp_correct = probs_comp[t, correct_id].item()
             ratio = p_comp_correct / p_base_correct if p_base_correct > 0 else 1.0 if gen_id == correct_id else 0.0
             prob_ratio_values[t] = ratio
         signals["fact_acc"] = {'time': time_values, 'prob_ratio': prob_ratio_values}
