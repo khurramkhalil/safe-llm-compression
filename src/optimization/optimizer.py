@@ -14,6 +14,8 @@ best_objective = float('inf')
 best_params = None
 falsified_configs = []
 
+# ... (imports and earlier code unchanged) ...
+
 def objective_function(params, base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", model_name="unknown"):
     global iteration, best_objective, best_params, falsified_configs
     iteration += 1
@@ -42,7 +44,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         comp_signals = forward_with_signals_batched(comp_model, input_ids_batch)
         print(f"Iteration {iteration}: Forward pass completed")
         
-        max_new_tokens = max([len(gt) for gt in ground_truth_cache if gt is not None])
+        max_new_tokens = max([len(gt) for gt in ground_truth_cache if gt is not None]) if any(ground_truth_cache) else 20
         with torch.no_grad():
             gen_output = comp_model.generate(
                 input_ids_batch,
@@ -54,7 +56,8 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 return_dict_in_generate=True,
                 output_scores=False,
                 no_repeat_ngram_size=3,  # Prevent repetition
-                repetition_penalty=1.5,  # Penalize repetition
+                repetition_penalty=2.0,  # Stronger penalty
+                min_length=input_ids_batch.shape[1] + 1,  # Ensure generation beyond input
             )
             generated_ids_batch = gen_output.sequences
             del gen_output
@@ -79,6 +82,8 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
                 gt_text = tokenizer.decode(ground_truth_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
                 print(f"Sample {i}: Input={dataset_subset[i]['input']}, Ground Truth='{gt_text}', Generated='{gen_text}'")
+                # Debug token IDs
+                print(f"Debug: input_len={input_len}, Generated IDs={generated_ids[:10]}")  # First 10 for brevity
             
             robustness, falsified = monitor_stl_signals(base_signals, comp_signals_batch, specs, ground_truth_ids, input_len, generated_ids)
             for k in robustness:
@@ -91,7 +96,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
             print(f"Iteration {iteration}: Sample {i} processed, Robustness={robustness}, Falsified={falsified}")
         
         # ... (rest of the function unchanged) ...
-        
+
         layer_bits = {l["pattern"]: l["bits"] for l in config["layers"]}
         size_mb = log_quantized_size(comp_model, layer_bits)
         compression_ratio = size_mb / original_size
