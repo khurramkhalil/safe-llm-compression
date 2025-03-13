@@ -124,6 +124,7 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     # Run initial points
     optimizer.maximize(init_points=5, n_iter=0)
     for i in range(5):
+        global best_objective, best_params  # Declare globals
         params = list(optimizer.res[i]['params'].values())
         objective, robustness, falsified_count = objective_function(
             params, base_model, dataset_subset, tokenizer, layer_groups, 
@@ -138,6 +139,7 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     # Run remaining iterations
     optimizer.maximize(init_points=0, n_iter=15)
     for i in range(5, 20):  # 5 initial + 15 iterations
+        global best_objective, best_params  # Declare globals
         params = list(optimizer.res[i]['params'].values())
         objective, robustness, falsified_count = objective_function(
             params, base_model, dataset_subset, tokenizer, layer_groups, 
@@ -154,7 +156,6 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     return best_params, logs
 
 if __name__ == "__main__":
-    # Example usage (replace with actual imports and data)
     from transformers import AutoModelForCausalLM, AutoTokenizer
     model = AutoModelForCausalLM.from_pretrained("gpt2").cuda()
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
