@@ -135,19 +135,29 @@ def main():
     print("Starting optimization...")
     layer_groups = get_layer_groups(base_model)
     bounds = [(14, 16), (0, 0.05)] * len(layer_groups)
-    run_optimization(
-        base_model=base_model,
-        dataset_subset=dataset_subset,
-        tokenizer=tokenizer,
-        layer_groups=layer_groups,
-        base_signals_cache=base_signals_cache,
-        ground_truth_cache=ground_truth_cache,
-        specs=specs,
-        original_size=original_size,
-        save_dir=save_dir,
-        model_name=model_name,
-        bounds=bounds
+    # run_optimization(
+    #     base_model=base_model,
+    #     dataset_subset=dataset_subset,
+    #     tokenizer=tokenizer,
+    #     layer_groups=layer_groups,
+    #     base_signals_cache=base_signals_cache,
+    #     ground_truth_cache=ground_truth_cache,
+    #     specs=specs,
+    #     original_size=original_size,
+    #     save_dir=save_dir,
+    #     model_name=model_name,
+    #     bounds=bounds
+    # )
+
+    best_params, logs = run_optimization(
+        base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache,
+        ground_truth_cache, specs, original_size, save_dir=save_dir, model_name=model_name
     )
+    import pandas as pd
+    # Ensure objective is numeric before finding min
+    logs['objective'] = pd.to_numeric(logs['objective'], errors='coerce')
+    best_row = logs.loc[logs['objective'].idxmin()]
+    print(f"Best Config: Params={best_row['params'][:6]}..., Objective={best_row['objective']:.4f}")
 
     total_time = time.time() - start_time
     print(f"Total Runtime: {total_time:.2f} seconds, Preprocessing: {preprocess_time:.2f} seconds")
