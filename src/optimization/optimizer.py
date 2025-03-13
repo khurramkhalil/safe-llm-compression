@@ -116,8 +116,7 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
         f=wrapped_objective,
         pbounds=pbounds,
         random_state=42,
-        verbose=2,
-        acq='ucb'  # Moved here from maximize
+        verbose=2
     )
     
     logs = pd.DataFrame(columns=['iteration', 'params', 'objective', 'falsified_samples', 'robustness'])
