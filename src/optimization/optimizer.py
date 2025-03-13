@@ -39,17 +39,21 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 max_new_tokens=max_new_tokens,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,  # Greedy decoding for consistency
+                do_sample=False,
                 num_beams=1,
                 no_repeat_ngram_size=3,
                 repetition_penalty=2.0,
                 min_length=input_ids_batch.shape[1] + 1,
+                # Ensure proper token handling
+                return_dict_in_generate=True,
+                output_scores=False,
             )
-            generated_ids_batch = gen_output
+            generated_ids_batch = gen_output.sequences
         
         total_robustness = 0.0
         falsification_count = 0
         sample_count = len(dataset_subset)
+        robustness_dict = {}
         
         for i in range(sample_count):
             base_signals = base_signals_cache[i]
@@ -70,35 +74,44 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
             robustness, falsified = monitor_stl_signals(base_signals, comp_signals_batch, specs, ground_truth_ids, input_len, generated_ids)
             for k in robustness:
                 if not isinstance(robustness[k], (int, float)) or np.isnan(robustness[k]) or np.isinf(robustness[k]):
-                    robustness[k] = -1e6 if k == 'seq_coh' else 0.0  # Clamp inf/-inf
+                    robustness[k] = -1e6 if k == 'seq_coh' else 0.0
+            robustness_dict[i] = robustness
             total_robustness += sum(robustness.values())
             falsification_count += any(falsified.values())
             print(f"Iteration {iteration}: Sample {i}, Robustness={robustness}, Falsified={falsified}")
         
-        # Fix index error: Match config layers to parameters
         compressed_size = 0
         for i, p in enumerate(comp_model.parameters()):
-            if i < len(config["layers"]):  # Ensure index is valid
+            if i < len(config["layers"]):
                 compressed_size += p.numel() * (config["layers"][i]["bits"] / 8)
             else:
-                compressed_size += p.numel() * (config["layers"][-1]["bits"] / 8)  # Default to last layer’s bits
+                compressed_size += p.numel() * (config["layers"][-1]["bits"] / 8)
         compression_ratio = original_size / compressed_size if compressed_size > 0 else 1.0
         objective = total_robustness / sample_count - compression_ratio
         
         print(f"Iteration {iteration}: Objective={objective:.4f}, Falsified Samples={falsification_count}")
         clear_gpu_memory()
-        return objective
+        return objective, robustness_dict, falsification_count
     
     except Exception as e:
         print(f"Iteration {iteration}: Error - {str(e)}")
-        return 1e6  # Large finite value
+        return 1e6, {}, 0
 
 def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", model_name="unknown"):
     from bayes_opt import BayesianOptimization
     
     pbounds = {f'p{i}': (4, 16) if i % 2 == 0 else (0, 0.5) for i in range(len(layer_groups) * 2)}
+    
+    def wrapped_objective(**params):
+        obj, robustness, falsified = objective_function(
+            [params[f'p{i}'] for i in range(len(layer_groups) * 2)], 
+            base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, 
+            ground_truth_cache, specs, original_size, save_dir, model_name
+        )
+        return obj
+    
     optimizer = BayesianOptimization(
-        f=lambda **params: objective_function([params[f'p{i}'] for i in range(len(layer_groups) * 2)], base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir, model_name),
+        f=wrapped_objective,
         pbounds=pbounds,
         random_state=42,
         verbose=2
@@ -109,10 +122,12 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     def on_step(opt):
         global best_objective, best_params
         params = list(opt.res[-1]['params'].values())
-        objective = opt.res[-1]['target']
-        robustness, falsified_count = opt.space._cache.get(objective, {'robustness': {}, 'falsified_count': 0})['robustness'], opt.space._cache.get(objective, {'robustness': {}, 'falsified_count': 0})['falsified_count']
+        objective, robustness, falsified_count = objective_function(
+            params, base_model, dataset_subset, tokenizer, layer_groups, 
+            base_signals_cache, ground_truth_cache, specs, original_size, save_dir, model_name
+        )
         logs.loc[len(logs)] = [iteration, params, objective, falsified_count, robustness]
-        print(f"Params (first 6): {params[:6]}..., Falsified Samples: {falsified_count}, Robustness: {robustness}")
+        print(f"Params (first 6): {params[:6]}..., Falsified Samples: {falsified_count}, Robustness: {list(robustness.values())[-1]}")
         if objective < best_objective:
             best_objective = objective
             best_params = params
