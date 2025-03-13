@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import pandas as pd
-from .model_utils import apply_config
+from src.model.model_utils import apply_config
 from ..stl.stl_monitoring import monitor_stl_signals
 from ..utils.common_utils import clear_gpu_memory
 
