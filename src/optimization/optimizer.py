@@ -116,7 +116,8 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
         f=wrapped_objective,
         pbounds=pbounds,
         random_state=42,
-        verbose=2
+        verbose=2,
+        acq='ucb'  # Moved here from maximize
     )
     
     logs = pd.DataFrame(columns=['iteration', 'params', 'objective', 'falsified_samples', 'robustness'])
@@ -134,6 +135,6 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
             best_objective = objective
             best_params = params
     
-    optimizer.maximize(init_points=5, n_iter=15, acq='ucb', callback=on_step)
+    optimizer.maximize(init_points=5, n_iter=15, callback=on_step)
     logs.to_csv(f"{save_dir}/{model_name}_optimization_log.csv", index=False)
     return best_params, logs
