@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import pandas as pd
-from src.models.model_utils import apply_config, forward_with_signals_batched  # Corrected import
+from src.models.model_utils import apply_config, forward_with_signals_batched
 from ..stl.stl_monitoring import monitor_stl_signals
 from ..utils.common_utils import clear_gpu_memory
 
@@ -30,7 +30,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
             batch_first=True, padding_value=tokenizer.pad_token_id
         ).cuda()
         
-        comp_signals = forward_with_signals_batched(comp_model, input_ids_batch)  # Now correctly imported
+        comp_signals = forward_with_signals_batched(comp_model, input_ids_batch)
         
         max_new_tokens = max([len(gt) for gt in ground_truth_cache if gt is not None]) if any(ground_truth_cache) else 20
         with torch.no_grad():
@@ -39,14 +39,14 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 max_new_tokens=max_new_tokens,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,
+                do_sample=False,  # Greedy decoding for consistency
                 num_beams=1,
                 no_repeat_ngram_size=3,
                 repetition_penalty=2.0,
                 min_length=input_ids_batch.shape[1] + 1,
             )
             generated_ids_batch = gen_output
-            
+        
         total_robustness = 0.0
         falsification_count = 0
         sample_count = len(dataset_subset)
@@ -69,13 +69,19 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
             
             robustness, falsified = monitor_stl_signals(base_signals, comp_signals_batch, specs, ground_truth_ids, input_len, generated_ids)
             for k in robustness:
-                if not isinstance(robustness[k], (int, float)) or np.isnan(robustness[k]):
-                    robustness[k] = 0.0
+                if not isinstance(robustness[k], (int, float)) or np.isnan(robustness[k]) or np.isinf(robustness[k]):
+                    robustness[k] = -1e6 if k == 'seq_coh' else 0.0  # Clamp inf/-inf
             total_robustness += sum(robustness.values())
             falsification_count += any(falsified.values())
             print(f"Iteration {iteration}: Sample {i}, Robustness={robustness}, Falsified={falsified}")
         
-        compressed_size = sum(p.numel() * (config["layers"][i]["bits"] / 8) for i, p in enumerate(comp_model.parameters()))
+        # Fix index error: Match config layers to parameters
+        compressed_size = 0
+        for i, p in enumerate(comp_model.parameters()):
+            if i < len(config["layers"]):  # Ensure index is valid
+                compressed_size += p.numel() * (config["layers"][i]["bits"] / 8)
+            else:
+                compressed_size += p.numel() * (config["layers"][-1]["bits"] / 8)  # Default to last layer’s bits
         compression_ratio = original_size / compressed_size if compressed_size > 0 else 1.0
         objective = total_robustness / sample_count - compression_ratio
         
@@ -85,7 +91,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
     
     except Exception as e:
         print(f"Iteration {iteration}: Error - {str(e)}")
-        return 1e6  # Large finite value instead of inf
+        return 1e6  # Large finite value
 
 def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", model_name="unknown"):
     from bayes_opt import BayesianOptimization
