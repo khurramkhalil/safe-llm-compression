@@ -65,7 +65,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
             input_len = dataset_subset[i]["input_len"]
             generated_ids = generated_ids_batch[i, input_len:].tolist() if ground_truth_ids else None
             
-            print(f"Debug: Sample {i}, Ground Truth IDs={ground_truth_ids[:5]}..., Generated IDs={generated_ids[:5] if generated_ids else None}...")
+            print(f"Debug: Sample {i}, Ground Truth IDs={ground_truth_ids[:5] if ground_truth_ids else None}..., Generated IDs={generated_ids[:5] if generated_ids else None}...")
             if ground_truth_ids and generated_ids:
                 gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
                 gt_text = tokenizer.decode(ground_truth_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
@@ -93,18 +93,27 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         
         print(f"Iteration {iteration}: Objective={objective:.4f}, Falsified Samples={falsification_count}")
         clear_gpu_memory()
-        return objective
+        return objective, robustness_dict, falsification_count
     
     except Exception as e:
         print(f"Iteration {iteration}: Error - {str(e)}")
-        return 1e6
+        return 1e6, {}, 0
 
 def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", model_name="unknown"):
     from bayes_opt import BayesianOptimization
     
     pbounds = {f'p{i}': (4, 16) if i % 2 == 0 else (0, 0.5) for i in range(len(layer_groups) * 2)}
+    
+    def wrapped_objective(**params):
+        obj, robustness, falsified = objective_function(
+            [params[f'p{i}'] for i in range(len(layer_groups) * 2)], 
+            base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, 
+            ground_truth_cache, specs, original_size, save_dir, model_name
+        )
+        return obj
+    
     optimizer = BayesianOptimization(
-        f=lambda **params: objective_function([params[f'p{i}'] for i in range(len(layer_groups) * 2)], base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir, model_name),
+        f=wrapped_objective,
         pbounds=pbounds,
         random_state=42,
         verbose=2
@@ -115,15 +124,16 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     def on_step(opt):
         global best_objective, best_params
         params = list(opt.res[-1]['params'].values())
-        objective = opt.res[-1]['target']
-        # Use the latest iteration's results directly
-        logs.loc[len(logs)] = [iteration, params, objective, opt.space._cache.get(objective, {'falsified_count': 0})['falsified_count'], opt.space._cache.get(objective, {'robustness': {}})['robustness']]
-        print(f"Params (first 6): {params[:6]}..., Falsified Samples: {logs.iloc[-1]['falsified_samples']}, Robustness: {logs.iloc[-1]['robustness']}")
+        objective, robustness, falsified_count = objective_function(
+            params, base_model, dataset_subset, tokenizer, layer_groups, 
+            base_signals_cache, ground_truth_cache, specs, original_size, save_dir, model_name
+        )
+        logs.loc[len(logs)] = [iteration, params, objective, falsified_count, robustness]
+        print(f"Params (first 6): {params[:6]}..., Falsified Samples: {falsified_count}, Robustness: {list(robustness.values())[-1]}")
         if objective < best_objective:
             best_objective = objective
             best_params = params
     
-    optimizer.subscribe('OPTIMIZATION_STEP', on_step)
-    optimizer.maximize(init_points=5, n_iter=15)
+    optimizer.maximize(init_points=5, n_iter=15, acq='ucb', callback=on_step)
     logs.to_csv(f"{save_dir}/{model_name}_optimization_log.csv", index=False)
     return best_params, logs
