@@ -105,7 +105,7 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     pbounds = {f'p{i}': (4, 16) if i % 2 == 0 else (0, 0.5) for i in range(len(layer_groups) * 2)}
     
     def wrapped_objective(**params):
-        obj, robustness, falsified = objective_function(
+        obj, _, _ = objective_function(
             [params[f'p{i}'] for i in range(len(layer_groups) * 2)], 
             base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, 
             ground_truth_cache, specs, original_size, save_dir, model_name
@@ -121,19 +121,47 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     
     logs = pd.DataFrame(columns=['iteration', 'params', 'objective', 'falsified_samples', 'robustness'])
     
-    def on_step(opt):
-        global best_objective, best_params
-        params = list(opt.res[-1]['params'].values())
+    # Run initial points
+    optimizer.maximize(init_points=5, n_iter=0)
+    for i in range(5):
+        params = list(optimizer.res[i]['params'].values())
         objective, robustness, falsified_count = objective_function(
             params, base_model, dataset_subset, tokenizer, layer_groups, 
             base_signals_cache, ground_truth_cache, specs, original_size, save_dir, model_name
         )
         logs.loc[len(logs)] = [iteration, params, objective, falsified_count, robustness]
-        print(f"Params (first 6): {params[:6]}..., Falsified Samples: {falsified_count}, Robustness: {list(robustness.values())[-1]}")
+        print(f"Initial Point {i+1}: Params (first 6): {params[:6]}..., Falsified Samples: {falsified_count}, Robustness: {list(robustness.values())[-1]}")
         if objective < best_objective:
             best_objective = objective
             best_params = params
     
-    optimizer.maximize(init_points=5, n_iter=15, callback=on_step)
+    # Run remaining iterations
+    optimizer.maximize(init_points=0, n_iter=15)
+    for i in range(5, 20):  # 5 initial + 15 iterations
+        params = list(optimizer.res[i]['params'].values())
+        objective, robustness, falsified_count = objective_function(
+            params, base_model, dataset_subset, tokenizer, layer_groups, 
+            base_signals_cache, ground_truth_cache, specs, original_size, save_dir, model_name
+        )
+        logs.loc[len(logs)] = [iteration, params, objective, falsified_count, robustness]
+        print(f"Iteration {i-4}: Params (first 6): {params[:6]}..., Falsified Samples: {falsified_count}, Robustness: {list(robustness.values())[-1]}")
+        if objective < best_objective:
+            best_objective = objective
+            best_params = params
+    
     logs.to_csv(f"{save_dir}/{model_name}_optimization_log.csv", index=False)
+    print(f"Optimization complete. Best objective: {best_objective:.4f}, Best params (first 6): {best_params[:6] if best_params else None}...")
     return best_params, logs
+
+if __name__ == "__main__":
+    # Example usage (replace with actual imports and data)
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    model = AutoModelForCausalLM.from_pretrained("gpt2").cuda()
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    dataset_subset = [{"input": "test", "input_len": 4}]
+    layer_groups = [{"pattern": "layer.*"}]
+    base_signals_cache = [{"probs": torch.randn(1, 50, 256000), "hidden_states": torch.randn(1, 50, 2304), "attention_matrices": {}}]
+    ground_truth_cache = [[1, 2, 3]]
+    specs = {}
+    original_size = 1e6
+    best_params, logs = run_optimization(model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size)
