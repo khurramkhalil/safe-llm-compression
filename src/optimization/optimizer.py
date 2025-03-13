@@ -100,6 +100,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         return 1e6, {}, 0
 
 def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", model_name="unknown"):
+    global best_objective, best_params  # Declare globals at the top
     from bayes_opt import BayesianOptimization
     
     pbounds = {f'p{i}': (4, 16) if i % 2 == 0 else (0, 0.5) for i in range(len(layer_groups) * 2)}
@@ -124,7 +125,6 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     # Run initial points
     optimizer.maximize(init_points=5, n_iter=0)
     for i in range(5):
-        global best_objective, best_params  # Declare globals
         params = list(optimizer.res[i]['params'].values())
         objective, robustness, falsified_count = objective_function(
             params, base_model, dataset_subset, tokenizer, layer_groups, 
@@ -139,7 +139,6 @@ def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_s
     # Run remaining iterations
     optimizer.maximize(init_points=0, n_iter=15)
     for i in range(5, 20):  # 5 initial + 15 iterations
-        global best_objective, best_params  # Declare globals
         params = list(optimizer.res[i]['params'].values())
         objective, robustness, falsified_count = objective_function(
             params, base_model, dataset_subset, tokenizer, layer_groups, 
@@ -159,10 +158,10 @@ if __name__ == "__main__":
     from transformers import AutoModelForCausalLM, AutoTokenizer
     model = AutoModelForCausalLM.from_pretrained("gpt2").cuda()
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    dataset_subset = [{"input": "test", "input_len": 4}]
+    dataset_subset = [{"input": "The quick brown fox", "input_len": 4}]
     layer_groups = [{"pattern": "layer.*"}]
     base_signals_cache = [{"probs": torch.randn(1, 50, 256000), "hidden_states": torch.randn(1, 50, 2304), "attention_matrices": {}}]
-    ground_truth_cache = [[1, 2, 3]]
+    ground_truth_cache = [tokenizer.encode(" jumps over the lazy dog", return_tensors="pt")[0].tolist()]
     specs = {}
     original_size = 1e6
     best_params, logs = run_optimization(model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size)
