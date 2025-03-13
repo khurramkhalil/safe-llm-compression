@@ -1,8 +1,8 @@
 import torch
 import numpy as np
 import pandas as pd
-from src.models.model_utils import apply_config
-from ..stl.stl_monitoring import monitor_stl_signals, forward_with_signals_batched  # Added import
+from src.models.model_utils import apply_config, forward_with_signals_batched  # Corrected import
+from ..stl.stl_monitoring import monitor_stl_signals
 from ..utils.common_utils import clear_gpu_memory
 
 iteration = 0
@@ -30,7 +30,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
             batch_first=True, padding_value=tokenizer.pad_token_id
         ).cuda()
         
-        comp_signals = forward_with_signals_batched(comp_model, input_ids_batch)  # Now defined
+        comp_signals = forward_with_signals_batched(comp_model, input_ids_batch)  # Now correctly imported
         
         max_new_tokens = max([len(gt) for gt in ground_truth_cache if gt is not None]) if any(ground_truth_cache) else 20
         with torch.no_grad():
