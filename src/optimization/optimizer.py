@@ -39,10 +39,10 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 max_new_tokens=max_new_tokens,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                do_sample=False,
-                num_beams=1,
+                do_sample=True,  # Enable sampling for diversity
+                top_k=50,        # Limit to top 50 tokens
                 no_repeat_ngram_size=3,
-                repetition_penalty=2.0,
+                repetition_penalty=1.2,  # Reduced from 2.0
                 min_length=input_ids_batch.shape[1] + 1,
                 return_dict_in_generate=True,
                 output_scores=False,
@@ -74,9 +74,10 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
                 print(f"Sample {i}: Skipping print - No generated IDs or ground truth")
             
             robustness, falsified = monitor_stl_signals(base_signals, comp_signals_batch, specs, ground_truth_ids, input_len, generated_ids)
+            print(f"Debug: Sample {i}, Raw Robustness={robustness}")  # Log raw values
             for k in robustness:
                 if not isinstance(robustness[k], (int, float)) or np.isnan(robustness[k]) or np.isinf(robustness[k]):
-                    robustness[k] = -1e6 if k == 'seq_coh' else 0.0
+                    robustness[k] = -10.0 if k == 'seq_coh' else 0.0  # Reduced penalty
             robustness_dict[i] = robustness
             total_robustness += sum(robustness.values())
             falsification_count += any(falsified.values())
@@ -100,7 +101,7 @@ def objective_function(params, base_model, dataset_subset, tokenizer, layer_grou
         return 1e6, {}, 0
 
 def run_optimization(base_model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size, save_dir="./saved_models/", model_name="unknown"):
-    global best_objective, best_params  # Declare globals at the top
+    global best_objective, best_params
     from bayes_opt import BayesianOptimization
     
     pbounds = {f'p{i}': (4, 16) if i % 2 == 0 else (0, 0.5) for i in range(len(layer_groups) * 2)}
@@ -158,10 +159,20 @@ if __name__ == "__main__":
     from transformers import AutoModelForCausalLM, AutoTokenizer
     model = AutoModelForCausalLM.from_pretrained("gpt2").cuda()
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    dataset_subset = [{"input": "The quick brown fox", "input_len": 4}]
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id  # Ensure pad token is set
+    dataset_subset = [
+        {"input": "where is zimbabwe located in the world map", "input_len": 9},
+        {"input": "where did the beatles final live performance take place", "input_len": 11},
+        {"input": "where is arkansas river located on a map", "input_len": 9}
+    ]
+    ground_truth_cache = [
+        tokenizer.encode("in southern Africa, between the Zambezi and Limpopo Rivers", return_tensors="pt")[0].tolist(),
+        tokenizer.encode("the roof of the headquarters of the band's multimedia corporation", return_tensors="pt")[0].tolist(),
+        tokenizer.encode("The Arkansas River flows through Colorado, Kansas, Oklahoma", return_tensors="pt")[0].tolist()
+    ]
     layer_groups = [{"pattern": "layer.*"}]
-    base_signals_cache = [{"probs": torch.randn(1, 50, 256000), "hidden_states": torch.randn(1, 50, 2304), "attention_matrices": {}}]
-    ground_truth_cache = [tokenizer.encode(" jumps over the lazy dog", return_tensors="pt")[0].tolist()]
+    base_signals_cache = [{"probs": torch.randn(1, 50, 256000), "hidden_states": torch.randn(1, 50, 2304), "attention_matrices": {}}] * 3
     specs = {}
     original_size = 1e6
     best_params, logs = run_optimization(model, dataset_subset, tokenizer, layer_groups, base_signals_cache, ground_truth_cache, specs, original_size)
